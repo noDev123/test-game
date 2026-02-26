@@ -8,7 +8,10 @@ cache = {'data': None}
 
 def scrape():
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=True,
+            args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+        )
         page = browser.new_page()
         page.goto("https://endfieldtools.dev/headhunt-tracker/#global", wait_until="networkidle")
         page.wait_for_timeout(8000)
@@ -39,23 +42,23 @@ def scrape():
 
 def background_scraper():
     while True:
-        print(f"Scraping... ({time.strftime('%H:%M:%S')})")
-        cache['data'] = scrape()
-        print(f"Done. Next refresh in 30 min.")
+        try:
+            print(f"Scraping... ({time.strftime('%H:%M:%S')})")
+            cache['data'] = scrape()
+            print(f"Done. Next refresh in 30 min.")
+        except Exception as e:
+            print(f"Scrape error: {e}")
         time.sleep(30 * 60)
-
-# start background scraper thread
-thread = threading.Thread(target=background_scraper, daemon=True)
-thread.start()
-
-# wait until first scrape is done before accepting requests
-print("Doing initial scrape, please wait...")
-while cache['data'] is None:
-    time.sleep(1)
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/stats':
+            if cache['data'] is None:
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                self.end_headers()
+                self.wfile.write("Loading... please wait and refresh in 30 seconds.".encode('utf-8'))
+                return
             data = cache['data']
             text = (
                 f"total-pulls: {data['total_pulls']}\n"
@@ -76,5 +79,10 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+# start background scraper
+thread = threading.Thread(target=background_scraper, daemon=True)
+thread.start()
+
+# start server immediately — don't wait for scrape
 print("Server running on http://localhost:8080/stats")
 HTTPServer(('0.0.0.0', 8080), Handler).serve_forever()
